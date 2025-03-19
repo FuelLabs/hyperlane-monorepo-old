@@ -28,7 +28,6 @@ spec:
         {{- end }}
       labels:
         {{- include "agent-common.labels" . | nindent 8 }}
-        app.kubernetes.io/component: validator
         {{- with .Values.podCommonLabels }}
         {{ toYaml . | nindent 8 }}
         {{- end }}
