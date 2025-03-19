@@ -17,6 +17,7 @@ externalSecrets:
   # Available types: SecretStore, ClusterSecretStore
   storeType: ClusterSecretStore
   storeName:
+  create: true
 
 podAnnotations: {}
 podCommonLabels: {}
@@ -34,7 +35,6 @@ hyperlane:
   # Defines what environment is being run
   runEnv: 'default'
   context: 'hyperlane'
-  createExternalSecrets: true
   # Set the DB location to be the volume
   dbPath: /usr/share/hyperlane
   rustBacktrace: full
