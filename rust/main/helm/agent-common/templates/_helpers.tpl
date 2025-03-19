@@ -35,7 +35,6 @@ Common labels
 */}}
 {{- define "agent-common.labels" -}}
 helm.sh/chart: {{ include "agent-common.chart" . }}
-app.kubernetes.io/component: agent-common
 hyperlane/deployment: {{ .Values.hyperlane.runEnv | quote }}
 hyperlane/context: {{ .Values.hyperlane.context | quote }}
 {{ include "agent-common.selectorLabels" . }}
