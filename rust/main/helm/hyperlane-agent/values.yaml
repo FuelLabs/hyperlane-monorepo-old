@@ -34,6 +34,7 @@ hyperlane:
   # Defines what environment is being run
   runEnv: 'default'
   context: 'hyperlane'
+  createExternalSecrets: true
   # Set the DB location to be the volume
   dbPath: /usr/share/hyperlane
   rustBacktrace: full
