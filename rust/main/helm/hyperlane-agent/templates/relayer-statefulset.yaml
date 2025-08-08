@@ -60,7 +60,7 @@ spec:
         env:
           {{- include "agent-common.config-env-vars" (dict "config" .Values.hyperlane.relayer.envConfig) | nindent 10 }}
           - name: CONFIG_FILES
-            value: {{ .Values.relayer.config_files }}
+            value: {{ .Values.hyperlane.relayer.config_files }}
         resources:
           {{- toYaml .Values.hyperlane.relayer.resources | nindent 10 }}
         volumeMounts:
