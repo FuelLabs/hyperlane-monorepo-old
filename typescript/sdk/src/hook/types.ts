@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
-import { ProtocolAgnositicGasOracleConfigSchema } from '../gas/oracle/types.js';
+import { Address, WithAddress } from '@hyperlane-xyz/utils';
+
+import { ProtocolAgnositicGasOracleConfigWithTypicalCostSchema } from '../gas/oracle/types.js';
 import { ZHash } from '../metadata/customZodTypes.js';
 import {
   ChainMap,
@@ -20,7 +22,7 @@ export enum OnchainHookType {
   ID_AUTH_ISM,
   PAUSABLE,
   PROTOCOL_FEE,
-  LAYER_ZERO_V1,
+  DEPRECATED,
   RATE_LIMITED,
   ARB_L2_TO_L1,
   OP_L2_TO_L1,
@@ -43,6 +45,24 @@ export enum HookType {
   MAILBOX_DEFAULT = 'defaultHook',
   CCIP = 'ccipHook',
 }
+
+export const HookTypeToContractNameMap: Record<
+  Exclude<HookType, HookType.CUSTOM>,
+  string
+> = {
+  [HookType.MERKLE_TREE]: 'merkleTreeHook',
+  [HookType.INTERCHAIN_GAS_PAYMASTER]: 'interchainGasPaymaster',
+  [HookType.AGGREGATION]: 'staticAggregationHook',
+  [HookType.PROTOCOL_FEE]: 'protocolFee',
+  [HookType.OP_STACK]: 'opStackHook',
+  [HookType.ROUTING]: 'domainRoutingHook',
+  [HookType.FALLBACK_ROUTING]: 'fallbackDomainRoutingHook',
+  [HookType.AMOUNT_ROUTING]: 'amountRoutingHook',
+  [HookType.PAUSABLE]: 'pausableHook',
+  [HookType.ARB_L2_TO_L1]: 'arbL2ToL1Hook',
+  [HookType.MAILBOX_DEFAULT]: 'defaultHook',
+  [HookType.CCIP]: 'ccipHook',
+};
 
 export type MerkleTreeHookConfig = z.infer<typeof MerkleTreeSchema>;
 export type IgpHookConfig = z.infer<typeof IgpSchema>;
@@ -76,6 +96,8 @@ export type AmountRoutingHookConfig = {
 };
 
 export type HookConfig = z.infer<typeof HookConfigSchema>;
+
+export type DerivedHookConfig = WithAddress<Exclude<HookConfig, Address>>;
 
 // Hook types that can be updated in-place
 export const MUTABLE_HOOK_TYPE = [
@@ -133,7 +155,7 @@ export const IgpSchema = OwnableSchema.extend({
   beneficiary: z.string(),
   oracleKey: z.string(),
   overhead: z.record(z.number()),
-  oracleConfig: z.record(ProtocolAgnositicGasOracleConfigSchema),
+  oracleConfig: z.record(ProtocolAgnositicGasOracleConfigWithTypicalCostSchema),
 });
 
 export const DomainRoutingHookConfigSchema: z.ZodSchema<DomainRoutingHookConfig> =

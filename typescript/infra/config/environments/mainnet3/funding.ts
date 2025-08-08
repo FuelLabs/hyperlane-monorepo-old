@@ -2,7 +2,7 @@ import { KeyFunderConfig } from '../../../src/config/funding.js';
 import { Role } from '../../../src/roles.js';
 import { Contexts } from '../../contexts.js';
 
-import desiredRelayerBalances from './balances/desiredRelayerBalances.json' assert { type: 'json' };
+import desiredRelayerBalances from './balances/desiredRelayerBalances.json' with { type: 'json' };
 import { environment } from './chains.js';
 import { mainnet3SupportedChainNames } from './supportedChainNames.js';
 
@@ -19,7 +19,7 @@ export const keyFunderConfig: KeyFunderConfig<
 > = {
   docker: {
     repo: 'gcr.io/abacus-labs-dev/hyperlane-monorepo',
-    tag: 'f5174e6-20250310-182925',
+    tag: 'f3b9391-20250630-150644',
   },
   // We're currently using the same deployer/key funder key as mainnet2.
   // To minimize nonce clobbering we offset the key funder cron
@@ -33,6 +33,7 @@ export const keyFunderConfig: KeyFunderConfig<
     [Contexts.Hyperlane]: [Role.Relayer, Role.Kathy],
     [Contexts.ReleaseCandidate]: [Role.Relayer, Role.Kathy],
   },
+  chainsToSkip: [],
   // desired balance config, must be set for each chain
   desiredBalancePerChain: desiredRelayerBalancePerChain,
   // if not set, keyfunder defaults to 0
@@ -54,7 +55,6 @@ export const keyFunderConfig: KeyFunderConfig<
     fusemainnet: '0',
     gnosis: '100',
     inevm: '0.05',
-    kroma: '0',
     linea: '0',
     lisk: '0',
     lukso: '0',
@@ -69,9 +69,7 @@ export const keyFunderConfig: KeyFunderConfig<
     polygon: '85',
     polygonzkevm: '0.05',
     proofofplay: '0',
-    real: '0',
     redstone: '0',
-    sanko: '0',
     scroll: '0.05',
     sei: '0',
     taiko: '0',
@@ -111,7 +109,6 @@ export const keyFunderConfig: KeyFunderConfig<
     fusemainnet: '10',
     gnosis: '5',
     inevm: '3',
-    kroma: '0.025',
     linea: '0.1',
     lisk: '0.025',
     lukso: '10',
@@ -126,9 +123,7 @@ export const keyFunderConfig: KeyFunderConfig<
     polygon: '20',
     polygonzkevm: '0.1',
     proofofplay: '0.025',
-    real: '0.05',
     redstone: '0.1',
-    sanko: '1',
     scroll: '0.1',
     sei: '5',
     taiko: '0.1',

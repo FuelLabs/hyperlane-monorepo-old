@@ -1,6 +1,7 @@
 import { SignerWithAddress } from '@nomiclabs/hardhat-ethers/signers.js';
 import { expect } from 'chai';
 import hre from 'hardhat';
+import sinon from 'sinon';
 import { zeroAddress } from 'viem';
 
 import {
@@ -8,25 +9,35 @@ import {
   ERC20Test__factory,
   ERC4626,
   ERC4626Test__factory,
+  FiatTokenTest,
+  FiatTokenTest__factory,
+  HypERC20__factory,
+  ISafe__factory,
   Mailbox,
   Mailbox__factory,
+  ProxyAdmin__factory,
   XERC20LockboxTest__factory,
   XERC20Test__factory,
 } from '@hyperlane-xyz/core';
+import { buildArtifact as coreBuildArtifact } from '@hyperlane-xyz/core/buildArtifact.js';
 import {
+  ContractVerifier,
+  ExplorerLicenseType,
   HyperlaneContractsMap,
   RouterConfig,
   TestChainName,
   WarpRouteDeployConfigMailboxRequired,
+  proxyAdmin,
+  proxyImplementation,
   test3,
 } from '@hyperlane-xyz/sdk';
-import { assert } from '@hyperlane-xyz/utils';
+import { addressToBytes32, assert, randomInt } from '@hyperlane-xyz/utils';
 
 import { TestCoreApp } from '../core/TestCoreApp.js';
 import { TestCoreDeployer } from '../core/TestCoreDeployer.js';
 import { HyperlaneProxyFactoryDeployer } from '../deploy/HyperlaneProxyFactoryDeployer.js';
 import { ProxyFactoryFactories } from '../deploy/contracts.js';
-import { DerivedIsmConfig } from '../ism/EvmIsmReader.js';
+import { VerifyContractTypes } from '../deploy/verify/types.js';
 import { HyperlaneIsmFactory } from '../ism/HyperlaneIsmFactory.js';
 import { MultiProvider } from '../providers/MultiProvider.js';
 import { ChainMap } from '../types.js';
@@ -34,6 +45,11 @@ import { ChainMap } from '../types.js';
 import { EvmERC20WarpRouteReader } from './EvmERC20WarpRouteReader.js';
 import { TokenType } from './config.js';
 import { HypERC20Deployer } from './deploy.js';
+import {
+  ContractVerificationStatus,
+  OwnerStatus,
+  derivedIsmAddress,
+} from './types.js';
 
 describe('ERC20WarpRouterReader', async () => {
   const TOKEN_NAME = 'fake';
@@ -47,6 +63,7 @@ describe('ERC20WarpRouterReader', async () => {
   let token: ERC20Test;
   let signer: SignerWithAddress;
   let deployer: HypERC20Deployer;
+  let contractVerifier: ContractVerifier;
   let multiProvider: MultiProvider;
   let coreApp: TestCoreApp;
   let routerConfigMap: ChainMap<RouterConfig>;
@@ -54,8 +71,10 @@ describe('ERC20WarpRouterReader', async () => {
   let mailbox: Mailbox;
   let evmERC20WarpRouteReader: EvmERC20WarpRouteReader;
   let vault: ERC4626;
+  let collateralFiatToken: FiatTokenTest;
   before(async () => {
     [signer] = await hre.ethers.getSigners();
+
     multiProvider = MultiProvider.createTestMultiProvider({ signer });
     const ismFactoryDeployer = new HyperlaneProxyFactoryDeployer(multiProvider);
     factories = await ismFactoryDeployer.deploy(
@@ -75,16 +94,35 @@ describe('ERC20WarpRouterReader', async () => {
 
     baseConfig = routerConfigMap[chain];
     mailbox = Mailbox__factory.connect(baseConfig.mailbox, signer);
-    evmERC20WarpRouteReader = new EvmERC20WarpRouteReader(multiProvider, chain);
     deployer = new HypERC20Deployer(multiProvider);
 
     const vaultFactory = new ERC4626Test__factory(signer);
     vault = await vaultFactory.deploy(token.address, TOKEN_NAME, TOKEN_NAME);
+
+    const fiatCollateralFactory = new FiatTokenTest__factory(signer);
+    collateralFiatToken = await fiatCollateralFactory.deploy(
+      TOKEN_NAME,
+      TOKEN_NAME,
+      TOKEN_SUPPLY,
+      TOKEN_DECIMALS,
+    );
   });
 
   beforeEach(async () => {
     // Reset the MultiProvider and create a new deployer for each test
     multiProvider = MultiProvider.createTestMultiProvider({ signer });
+    contractVerifier = new ContractVerifier(
+      multiProvider,
+      {},
+      coreBuildArtifact,
+      ExplorerLicenseType.MIT,
+    );
+    evmERC20WarpRouteReader = new EvmERC20WarpRouteReader(
+      multiProvider,
+      chain,
+      1,
+      contractVerifier,
+    );
     deployer = new HypERC20Deployer(multiProvider);
   });
 
@@ -110,7 +148,6 @@ describe('ERC20WarpRouterReader', async () => {
             name: TOKEN_NAME,
             symbol: TOKEN_NAME,
             decimals: TOKEN_DECIMALS,
-            totalSupply: TOKEN_SUPPLY,
             gas: GAS,
             ...baseConfig,
           },
@@ -156,9 +193,9 @@ describe('ERC20WarpRouterReader', async () => {
       ),
     );
     // Check ism
-    expect(
-      (derivedConfig.interchainSecurityModule as DerivedIsmConfig).address,
-    ).to.be.equal(await mailbox.defaultIsm());
+    expect(derivedIsmAddress(derivedConfig)).to.be.equal(
+      await mailbox.defaultIsm(),
+    );
 
     // Check if token values matches
     if (derivedConfig.type === TokenType.collateral) {
@@ -206,9 +243,9 @@ describe('ERC20WarpRouterReader', async () => {
       ),
     );
     // Check ism
-    expect(
-      (derivedConfig.interchainSecurityModule as DerivedIsmConfig).address,
-    ).to.be.equal(await mailbox.defaultIsm());
+    expect(derivedIsmAddress(derivedConfig)).to.be.equal(
+      await mailbox.defaultIsm(),
+    );
 
     // Check if token values matches
     if (derivedConfig.type === TokenType.XERC20) {
@@ -256,9 +293,9 @@ describe('ERC20WarpRouterReader', async () => {
       ),
     );
     // Check ism
-    expect(
-      (derivedConfig.interchainSecurityModule as DerivedIsmConfig).address,
-    ).to.be.equal(await mailbox.defaultIsm());
+    expect(derivedIsmAddress(derivedConfig)).to.be.equal(
+      await mailbox.defaultIsm(),
+    );
 
     // Check if token values matches
     if (derivedConfig.type === TokenType.XERC20) {
@@ -311,7 +348,7 @@ describe('ERC20WarpRouterReader', async () => {
         name: TOKEN_NAME,
         symbol: TOKEN_NAME,
         decimals: TOKEN_DECIMALS,
-        totalSupply: TOKEN_SUPPLY,
+        initialSupply: TOKEN_SUPPLY,
         ...baseConfig,
       },
     };
@@ -413,6 +450,33 @@ describe('ERC20WarpRouterReader', async () => {
     expect(derivedConfig.token).to.equal(token.address);
   });
 
+  // FiatTokenTest
+  it('should derive collateral fiat token type correctly', async () => {
+    // Create config
+    const config: WarpRouteDeployConfigMailboxRequired = {
+      [chain]: {
+        type: TokenType.collateralFiat,
+        token: collateralFiatToken.address,
+        ...baseConfig,
+      },
+    };
+    // Deploy with config
+    const warpRoute = await deployer.deploy(config);
+    // Derive config and check if each value matches
+    const derivedConfig = await evmERC20WarpRouteReader.deriveWarpRouteConfig(
+      warpRoute[chain].collateralFiat.address,
+    );
+
+    assert(
+      derivedConfig.type === TokenType.collateralFiat,
+      `Must be ${TokenType.collateralFiat}`,
+    );
+    expect(derivedConfig.type).to.equal(config[chain].type);
+    expect(derivedConfig.mailbox).to.equal(config[chain].mailbox);
+    expect(derivedConfig.owner).to.equal(config[chain].owner);
+    expect(derivedConfig.token).to.equal(collateralFiatToken.address);
+  });
+
   it('should return 0x0 if ism is not set onchain', async () => {
     // Create config
     const config: WarpRouteDeployConfigMailboxRequired = {
@@ -462,6 +526,151 @@ describe('ERC20WarpRouterReader', async () => {
     expect(Object.keys(derivedConfig.remoteRouters!).length).to.equal(1);
     expect(
       derivedConfig.remoteRouters![otherChainMetadata.domainId!].address,
-    ).to.be.equal(warpRoute[otherChain].collateral.address);
+    ).to.be.equal(addressToBytes32(warpRoute[otherChain].collateral.address));
+  });
+
+  it('should return the contractVerificationStatus virtual config', async () => {
+    const otherChain = TestChainName.test3;
+    const config: WarpRouteDeployConfigMailboxRequired = {
+      [chain]: {
+        type: TokenType.collateral,
+        token: token.address,
+        hook: await mailbox.defaultHook(),
+        ...baseConfig,
+      },
+      [otherChain]: {
+        type: TokenType.collateral,
+        token: token.address,
+        hook: await mailbox.defaultHook(),
+        ...baseConfig,
+      },
+    };
+    // Deploy with config
+    const warpRoute = await deployer.deploy(config);
+
+    // Stub isLocalRpc to bypass local rpc check
+    const isLocalRpcStub = sinon
+      .stub(multiProvider, 'isLocalRpc')
+      .returns(false);
+
+    // Stub getContractVerificationStatus
+    const getContractVerificationStatus = sinon
+      .stub(contractVerifier, 'getContractVerificationStatus')
+      .resolves(ContractVerificationStatus.Verified);
+
+    // Derive config and check if the owner is active
+    const derivedConfig =
+      await evmERC20WarpRouteReader.deriveWarpRouteVirtualConfig(
+        chain,
+        warpRoute[chain].collateral.address,
+      );
+    expect(derivedConfig.contractVerificationStatus).to.deep.equal({
+      [VerifyContractTypes.Proxy]: ContractVerificationStatus.Verified,
+      [VerifyContractTypes.Implementation]: ContractVerificationStatus.Verified,
+      [VerifyContractTypes.ProxyAdmin]: ContractVerificationStatus.Verified,
+    });
+
+    // Restore stub
+    getContractVerificationStatus.restore();
+    isLocalRpcStub.restore();
+  });
+
+  it('should return the ownerStatus virtual config for the proxy, implementation, and proxy admin, if they are different', async () => {
+    const provider = multiProvider.getProvider(chain);
+    const otherChain = TestChainName.test3;
+    const config: WarpRouteDeployConfigMailboxRequired = {
+      [chain]: {
+        type: TokenType.collateral,
+        token: token.address,
+        hook: await mailbox.defaultHook(),
+        ...baseConfig,
+      },
+      [otherChain]: {
+        type: TokenType.collateral,
+        token: token.address,
+        hook: await mailbox.defaultHook(),
+        ...baseConfig,
+      },
+    };
+    // Deploy with config
+    const warpRoute = await deployer.deploy(config);
+
+    // Stub isLocalRpc to bypass local rpc check
+    const isLocalRpcStub = sinon
+      .stub(multiProvider, 'isLocalRpc')
+      .returns(false);
+
+    // Derive config and transfer the proxy, implementation, and proxyAdmin over
+    const warpRouteAddress = warpRoute[chain].collateral.address;
+    const proxyAdminAddress = await proxyAdmin(provider, warpRouteAddress);
+    await new ProxyAdmin__factory()
+      .connect(signer)
+      .attach(proxyAdminAddress)
+      .transferOwnership(warpRouteAddress);
+    const implementation = await proxyImplementation(
+      provider,
+      warpRouteAddress,
+    );
+    await new HypERC20__factory()
+      .connect(signer)
+      .attach(implementation)
+      .transferOwnership(mailbox.address);
+
+    const derivedConfig =
+      await evmERC20WarpRouteReader.deriveWarpRouteVirtualConfig(
+        chain,
+        warpRouteAddress,
+      );
+
+    expect(derivedConfig.ownerStatus).to.deep.equal({
+      [signer.address]: OwnerStatus.Active,
+      [warpRouteAddress]: OwnerStatus.Active,
+      [mailbox.address]: OwnerStatus.Active,
+    });
+
+    // Restore stub
+    isLocalRpcStub.restore();
+  });
+
+  it('should return a Gnosis Safe ownerStatus', async () => {
+    const config: WarpRouteDeployConfigMailboxRequired = {
+      [chain]: {
+        type: TokenType.collateral,
+        token: token.address,
+        hook: await mailbox.defaultHook(),
+        ...baseConfig,
+      },
+    };
+    // Deploy with config
+    const warpRoute = await deployer.deploy(config);
+    const warpRouteAddress = warpRoute[chain].collateral.address;
+
+    // Stub isLocalRpc to bypass local rpc check
+    const isLocalRpcStub = sinon
+      .stub(multiProvider, 'isLocalRpc')
+      .returns(false);
+
+    const mockOwnerManager = {
+      getThreshold: sinon.stub().resolves(randomInt(1e4)),
+      nonce: sinon.stub().resolves(randomInt(1e4)),
+    };
+    const connectStub = sinon
+      .stub(ISafe__factory, 'connect')
+      .returns(mockOwnerManager as any);
+
+    // Derive config and check if the owner is active
+    const derivedConfig =
+      await evmERC20WarpRouteReader.deriveWarpRouteVirtualConfig(
+        chain,
+        warpRouteAddress,
+      );
+
+    expect(derivedConfig.ownerStatus).to.deep.equal({
+      [signer.address]: OwnerStatus.GnosisSafe,
+    });
+
+    // Restore stub
+    connectStub.restore();
+    isLocalRpcStub.restore();
   });
 });

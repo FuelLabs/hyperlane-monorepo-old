@@ -14,6 +14,7 @@ export interface TransferParams {
 export interface TransferRemoteParams extends TransferParams {
   destination: Domain;
   interchainGas?: InterchainGasQuote;
+  customHook?: Address;
 }
 
 export interface InterchainGasQuote {
@@ -29,6 +30,11 @@ export interface RateLimitMidPoint {
   midPoint: bigint;
 }
 
+export interface xERC20Limits {
+  mint: bigint;
+  burn: bigint;
+}
+
 export interface ITokenAdapter<Tx> {
   getBalance(address: Address): Promise<bigint>;
   getTotalSupply(): Promise<bigint | undefined>;
@@ -39,8 +45,30 @@ export interface ITokenAdapter<Tx> {
     spender: Address,
     weiAmountOrId: Numberish,
   ): Promise<boolean>;
+  isRevokeApprovalRequired(owner: Address, spender: Address): Promise<boolean>;
   populateApproveTx(params: TransferParams): Promise<Tx>;
   populateTransferTx(params: TransferParams): Promise<Tx>;
+}
+
+export interface IMovableCollateralRouterAdapter<Tx> extends ITokenAdapter<Tx> {
+  isRebalancer(address: Address): Promise<boolean>;
+  isBridgeAllowed(domain: Domain, bridge: Address): Promise<boolean>;
+  getAllowedDestination(domain: Domain): Promise<Address>;
+  getRebalanceQuotes(
+    bridge: Address,
+    domain: Domain,
+    recipient: Address,
+    amount: Numberish,
+    isWarp: boolean,
+  ): Promise<InterchainGasQuote[]>;
+  getWrappedTokenAddress(): Promise<Address>;
+
+  populateRebalanceTx(
+    domain: Domain,
+    amount: Numberish,
+    bridge: Address,
+    quotes: InterchainGasQuote[],
+  ): Promise<Tx>;
 }
 
 export interface IHypTokenAdapter<Tx> extends ITokenAdapter<Tx> {
@@ -52,6 +80,7 @@ export interface IHypTokenAdapter<Tx> extends ITokenAdapter<Tx> {
   quoteTransferRemoteGas(
     destination: Domain,
     sender?: Address,
+    customHook?: Address,
   ): Promise<InterchainGasQuote>;
   populateTransferRemoteTx(p: TransferRemoteParams): Promise<Tx>;
 }
@@ -91,4 +120,12 @@ export interface IXERC20VSAdapter<Tx> extends ITokenAdapter<Tx> {
     rateLimitPerSecond: bigint,
     bridge: Address,
   ): Promise<Tx>;
+}
+
+export interface IXERC20Adapter<Tx> extends ITokenAdapter<Tx> {
+  getLimits(bridge: Address): Promise<xERC20Limits>;
+}
+
+export interface IHypCollateralFiatAdapter<Tx> extends IHypTokenAdapter<Tx> {
+  getMintLimit(): Promise<bigint>;
 }

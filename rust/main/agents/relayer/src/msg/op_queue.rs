@@ -6,7 +6,7 @@ use prometheus::{IntGauge, IntGaugeVec};
 use tokio::sync::{broadcast::Receiver, Mutex};
 use tracing::{debug, instrument};
 
-use crate::server::{MessageRetryQueueResponse, MessageRetryRequest};
+use crate::server::operations::message_retry::{MessageRetryQueueResponse, MessageRetryRequest};
 
 pub type OperationPriorityQueue = Arc<Mutex<BinaryHeap<Reverse<QueueOperation>>>>;
 
@@ -54,7 +54,8 @@ impl OpQueue {
                 break;
             }
         }
-        // This function is called very often by the op_submitter tasks, so only log when there are operations to pop
+
+        // This function is called very often by the message processor tasks, so only log when there are operations to pop
         // to avoid spamming the logs
         if !popped.is_empty() {
             debug!(
@@ -153,28 +154,36 @@ impl OpQueue {
         queue.append(&mut reprioritized_queue);
         retry_responses
     }
+
+    pub async fn len(&self) -> usize {
+        let queue = self.queue.lock().await;
+        queue.len()
+    }
 }
 
 #[cfg(test)]
 pub mod test {
+    use std::{
+        collections::VecDeque,
+        str::FromStr,
+        time::{Duration, Instant},
+    };
+
+    use serde::Serialize;
+    use tokio::sync::{self, mpsc};
+
+    use hyperlane_core::{
+        ChainResult, HyperlaneDomain, HyperlaneDomainProtocol, HyperlaneDomainTechnicalStack,
+        HyperlaneDomainType, HyperlaneMessage, KnownHyperlaneDomain, Mailbox,
+        PendingOperationResult, ReprepareReason, TryBatchAs, TxOutcome, H256, U256,
+    };
+
     use crate::{
         server::ENDPOINT_MESSAGES_QUEUE_SIZE,
         settings::matching_list::{Filter, ListElement, MatchingList},
     };
 
     use super::*;
-    use hyperlane_core::{
-        HyperlaneDomain, HyperlaneDomainProtocol, HyperlaneDomainTechnicalStack,
-        HyperlaneDomainType, HyperlaneMessage, KnownHyperlaneDomain, PendingOperationResult,
-        TryBatchAs, TxOutcome, H256, U256,
-    };
-    use serde::Serialize;
-    use std::{
-        collections::VecDeque,
-        str::FromStr,
-        time::{Duration, Instant},
-    };
-    use tokio::sync::{self, mpsc};
 
     #[derive(Debug, Clone, Serialize)]
     pub struct MockPendingOperation {
@@ -185,6 +194,9 @@ pub mod test {
         recipient_address: H256,
         seconds_to_next_attempt: u64,
         destination_domain: HyperlaneDomain,
+        retry_count: u32,
+        #[serde(skip)]
+        pub mailbox: Option<Arc<dyn Mailbox>>,
     }
 
     impl MockPendingOperation {
@@ -197,6 +209,8 @@ pub mod test {
                 sender_address: H256::random(),
                 recipient_address: H256::random(),
                 origin_domain_id: 0,
+                retry_count: 0,
+                mailbox: None,
             }
         }
 
@@ -208,6 +222,7 @@ pub mod test {
                 origin_domain_id: message.origin,
                 destination_domain_id: message.destination,
                 seconds_to_next_attempt: 0,
+                retry_count: 0,
                 destination_domain: HyperlaneDomain::Unknown {
                     domain_id: message.destination,
                     domain_name: "test".to_string(),
@@ -215,6 +230,7 @@ pub mod test {
                     domain_protocol: HyperlaneDomainProtocol::Ethereum,
                     domain_technical_stack: HyperlaneDomainTechnicalStack::Other,
                 },
+                mailbox: None,
             }
         }
 
@@ -249,6 +265,11 @@ pub mod test {
                 ..self
             }
         }
+
+        pub fn with_retry_count(mut self, retry_count: u32) -> Self {
+            self.set_retries(retry_count);
+            self
+        }
     }
 
     impl TryBatchAs<HyperlaneMessage> for MockPendingOperation {}
@@ -276,6 +297,10 @@ pub mod test {
 
         fn recipient_address(&self) -> &H256 {
             &self.recipient_address
+        }
+
+        fn body(&self) -> &[u8] {
+            &[]
         }
 
         fn get_metric(&self) -> Option<Arc<IntGauge>> {
@@ -333,7 +358,7 @@ pub mod test {
             todo!()
         }
 
-        fn set_operation_outcome(
+        async fn set_operation_outcome(
             &mut self,
             _submission_outcome: TxOutcome,
             _submission_estimated_cost: U256,
@@ -353,7 +378,26 @@ pub mod test {
             todo!()
         }
 
-        fn set_retries(&mut self, _retries: u32) {
+        fn set_retries(&mut self, retries: u32) {
+            self.retry_count = retries;
+        }
+        fn get_retries(&self) -> u32 {
+            self.retry_count
+        }
+
+        async fn payload(&self) -> ChainResult<Vec<u8>> {
+            todo!()
+        }
+
+        fn success_criteria(&self) -> ChainResult<Option<Vec<u8>>> {
+            todo!()
+        }
+
+        fn on_reprepare(
+            &mut self,
+            _err_msg: Option<String>,
+            _: ReprepareReason,
+        ) -> PendingOperationResult {
             todo!()
         }
     }
@@ -623,6 +667,7 @@ pub mod test {
                     Filter::Wildcard,
                     Filter::Wildcard,
                     Filter::Wildcard,
+                    None,
                 )])),
                 transmitter: transmitter.clone(),
             })
@@ -679,6 +724,7 @@ pub mod test {
                     Filter::Wildcard,
                     Filter::Enumerated(vec![KnownHyperlaneDomain::Optimism as u32]),
                     Filter::Wildcard,
+                    None,
                 )])),
                 transmitter: transmitter.clone(),
             })
@@ -736,6 +782,7 @@ pub mod test {
                         Filter::Wildcard,
                         Filter::Wildcard,
                         Filter::Wildcard,
+                        None,
                     ),
                     ListElement::new(
                         Filter::Wildcard,
@@ -743,6 +790,7 @@ pub mod test {
                         Filter::Wildcard,
                         Filter::Enumerated(vec![KnownHyperlaneDomain::Arbitrum as u32]),
                         Filter::Wildcard,
+                        None,
                     ),
                 ])),
                 transmitter: transmitter.clone(),
@@ -800,6 +848,7 @@ pub mod test {
                     Filter::Wildcard,
                     Filter::Wildcard,
                     Filter::Wildcard,
+                    None,
                 ),
                 ListElement::new(
                     Filter::Wildcard,
@@ -807,6 +856,7 @@ pub mod test {
                     Filter::Wildcard,
                     Filter::Enumerated(vec![KnownHyperlaneDomain::Arbitrum as u32]),
                     Filter::Wildcard,
+                    None,
                 ),
             ])),
             transmitter: transmitter.clone(),

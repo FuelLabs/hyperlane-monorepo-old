@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  AbstractCcipReadIsm,
   ArbL2ToL1Ism,
   CCIPIsm,
   IAggregationIsm,
@@ -8,12 +9,18 @@ import {
   IMultisigIsm,
   IRoutingIsm,
   IStaticWeightedMultisigIsm,
+  InterchainAccountRouter,
   OPStackIsm,
   PausableIsm,
   TestIsm,
   TrustedRelayerIsm,
 } from '@hyperlane-xyz/core';
-import type { Address, Domain, ValueOf } from '@hyperlane-xyz/utils';
+import type {
+  Address,
+  Domain,
+  ValueOf,
+  WithAddress,
+} from '@hyperlane-xyz/utils';
 
 import { ZHash } from '../metadata/customZodTypes.js';
 import {
@@ -22,6 +29,7 @@ import {
   OwnableSchema,
   PausableSchema,
 } from '../types.js';
+import { isCompliant } from '../utils/schemas.js';
 
 // this enum should match the IInterchainSecurityModule.sol enum
 // meant for the relayer
@@ -46,8 +54,8 @@ export enum IsmType {
   OP_STACK = 'opStackIsm',
   ROUTING = 'domainRoutingIsm',
   FALLBACK_ROUTING = 'defaultFallbackRoutingIsm',
-  ICA_ROUTING = 'icaRoutingIsm',
   AMOUNT_ROUTING = 'amountRoutingIsm',
+  INTERCHAIN_ACCOUNT_ROUTING = 'interchainAccountRouting',
   AGGREGATION = 'staticAggregationIsm',
   STORAGE_AGGREGATION = 'storageAggregationIsm',
   MERKLE_ROOT_MULTISIG = 'merkleRootMultisigIsm',
@@ -61,6 +69,7 @@ export enum IsmType {
   WEIGHTED_MERKLE_ROOT_MULTISIG = 'weightedMerkleRootMultisigIsm',
   WEIGHTED_MESSAGE_ID_MULTISIG = 'weightedMessageIdMultisigIsm',
   CCIP = 'ccipIsm',
+  OFFCHAIN_LOOKUP = 'offchainLookupIsm',
 }
 
 // ISM types that can be updated in-place
@@ -68,15 +77,40 @@ export const MUTABLE_ISM_TYPE = [
   IsmType.ROUTING,
   IsmType.FALLBACK_ROUTING,
   IsmType.PAUSABLE,
+  IsmType.OFFCHAIN_LOOKUP,
 ];
+
+/**
+ * @notice Statically deployed ISM types
+ * @dev ISM types with immutable config embedded in contract bytecode via MetaProxy
+ */
+export const STATIC_ISM_TYPES = [
+  IsmType.AGGREGATION,
+  IsmType.MERKLE_ROOT_MULTISIG,
+  IsmType.MESSAGE_ID_MULTISIG,
+  IsmType.WEIGHTED_MERKLE_ROOT_MULTISIG,
+  IsmType.WEIGHTED_MESSAGE_ID_MULTISIG,
+];
+
+export const DYNAMICALLY_ROUTED_ISM_TYPES = [
+  IsmType.AMOUNT_ROUTING,
+  IsmType.INTERCHAIN_ACCOUNT_ROUTING,
+] as const;
+
+/** Type guard for dynamically routed ISM types */
+export function isDynamicallyRoutedIsmType(
+  type: IsmType,
+): type is (typeof DYNAMICALLY_ROUTED_ISM_TYPES)[number] {
+  return (DYNAMICALLY_ROUTED_ISM_TYPES as readonly IsmType[]).includes(type);
+}
 
 // mapping between the two enums
 export function ismTypeToModuleType(ismType: IsmType): ModuleType {
   switch (ismType) {
     case IsmType.ROUTING:
     case IsmType.FALLBACK_ROUTING:
-    case IsmType.ICA_ROUTING:
     case IsmType.AMOUNT_ROUTING:
+    case IsmType.INTERCHAIN_ACCOUNT_ROUTING:
       return ModuleType.ROUTING;
     case IsmType.AGGREGATION:
     case IsmType.STORAGE_AGGREGATION:
@@ -100,6 +134,8 @@ export function ismTypeToModuleType(ismType: IsmType): ModuleType {
       return ModuleType.WEIGHTED_MERKLE_ROOT_MULTISIG;
     case IsmType.WEIGHTED_MESSAGE_ID_MULTISIG:
       return ModuleType.WEIGHTED_MESSAGE_ID_MULTISIG;
+    case IsmType.OFFCHAIN_LOOKUP:
+      return ModuleType.CCIP_READ;
   }
 }
 
@@ -126,6 +162,10 @@ export type TrustedRelayerIsmConfig = z.infer<
 export type CCIPIsmConfig = z.infer<typeof CCIPIsmConfigSchema>;
 export type ArbL2ToL1IsmConfig = z.infer<typeof ArbL2ToL1IsmConfigSchema>;
 
+export type OffchainLookupIsmConfig = z.infer<
+  typeof OffchainLookupIsmConfigSchema
+>;
+
 export type NullIsmConfig =
   | TestIsmConfig
   | PausableIsmConfig
@@ -137,8 +177,8 @@ type BaseRoutingIsmConfig<
   T extends
     | IsmType.ROUTING
     | IsmType.FALLBACK_ROUTING
-    | IsmType.ICA_ROUTING
-    | IsmType.AMOUNT_ROUTING,
+    | IsmType.AMOUNT_ROUTING
+    | IsmType.INTERCHAIN_ACCOUNT_ROUTING,
 > = {
   type: T;
 };
@@ -148,7 +188,13 @@ export type DomainRoutingIsmConfig = BaseRoutingIsmConfig<
 > &
   OwnableConfig & { domains: ChainMap<IsmConfig> };
 
-export type IcaRoutingIsmConfig = BaseRoutingIsmConfig<IsmType.ICA_ROUTING>;
+export const InterchainAccountRouterIsmSchema = OwnableSchema.extend({
+  type: z.literal(IsmType.INTERCHAIN_ACCOUNT_ROUTING),
+  isms: z.record(ZHash),
+});
+export type InterchainAccountRouterIsm = z.infer<
+  typeof InterchainAccountRouterIsmSchema
+>;
 
 export type AmountRoutingIsmConfig =
   BaseRoutingIsmConfig<IsmType.AMOUNT_ROUTING> & {
@@ -158,9 +204,9 @@ export type AmountRoutingIsmConfig =
   };
 
 export type RoutingIsmConfig =
-  | IcaRoutingIsmConfig
   | DomainRoutingIsmConfig
-  | AmountRoutingIsmConfig;
+  | AmountRoutingIsmConfig
+  | InterchainAccountRouterIsm;
 
 export type AggregationIsmConfig = {
   type: IsmType.AGGREGATION | IsmType.STORAGE_AGGREGATION;
@@ -170,11 +216,12 @@ export type AggregationIsmConfig = {
 
 export type IsmConfig = z.infer<typeof IsmConfigSchema>;
 
+export type DerivedIsmConfig = WithAddress<Exclude<IsmConfig, Address>>;
+
 export type DeployedIsmType = {
   [IsmType.CUSTOM]: IInterchainSecurityModule;
   [IsmType.ROUTING]: IRoutingIsm;
   [IsmType.FALLBACK_ROUTING]: IRoutingIsm;
-  [IsmType.ICA_ROUTING]: IRoutingIsm;
   [IsmType.AMOUNT_ROUTING]: IRoutingIsm;
   [IsmType.AGGREGATION]: IAggregationIsm;
   [IsmType.STORAGE_AGGREGATION]: IAggregationIsm;
@@ -190,6 +237,8 @@ export type DeployedIsmType = {
   [IsmType.ARB_L2_TO_L1]: ArbL2ToL1Ism;
   [IsmType.WEIGHTED_MERKLE_ROOT_MULTISIG]: IStaticWeightedMultisigIsm;
   [IsmType.WEIGHTED_MESSAGE_ID_MULTISIG]: IStaticWeightedMultisigIsm;
+  [IsmType.OFFCHAIN_LOOKUP]: AbstractCcipReadIsm;
+  [IsmType.INTERCHAIN_ACCOUNT_ROUTING]: InterchainAccountRouter;
 };
 
 export type DeployedIsm = ValueOf<DeployedIsmType>;
@@ -230,6 +279,15 @@ export const CCIPIsmConfigSchema = z.object({
   type: z.literal(IsmType.CCIP),
   originChain: z.string(),
 });
+
+export const OffchainLookupIsmConfigSchema = OwnableSchema.extend({
+  type: z.literal(IsmType.OFFCHAIN_LOOKUP),
+  urls: z.array(z.string()),
+});
+
+export const isOffchainLookupIsmConfig = isCompliant(
+  OffchainLookupIsmConfigSchema,
+);
 
 export const OpStackIsmConfigSchema = z.object({
   type: z.literal(IsmType.OP_STACK),
@@ -272,9 +330,6 @@ export const RoutingIsmConfigSchema: z.ZodSchema<RoutingIsmConfig> = z.lazy(
   () =>
     z.discriminatedUnion('type', [
       z.object({
-        type: z.literal(IsmType.ICA_ROUTING),
-      }),
-      z.object({
         type: z.literal(IsmType.AMOUNT_ROUTING),
         lowerIsm: IsmConfigSchema,
         upperIsm: IsmConfigSchema,
@@ -288,6 +343,7 @@ export const RoutingIsmConfigSchema: z.ZodSchema<RoutingIsmConfig> = z.lazy(
         type: z.literal(IsmType.FALLBACK_ROUTING),
         domains: z.record(IsmConfigSchema),
       }),
+      InterchainAccountRouterIsmSchema,
     ]),
 );
 
@@ -315,4 +371,6 @@ export const IsmConfigSchema = z.union([
   RoutingIsmConfigSchema,
   AggregationIsmConfigSchema,
   ArbL2ToL1IsmConfigSchema,
+  OffchainLookupIsmConfigSchema,
+  InterchainAccountRouterIsmSchema,
 ]);

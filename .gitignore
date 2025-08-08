@@ -24,7 +24,13 @@ solidity/artifacts
 .yarn/cache
 yarn-error.log
 
+.turbo
+
 .idea
 **/*.ignore
 
 tsconfig.editor.json
+
+# yalc
+yalc.lock
+.yalc

@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 
 import {
+  AbstractStorageMultisigIsm__factory,
   AmountRoutingIsm__factory,
   CCIPIsm__factory,
   DomainRoutingIsm__factory,
@@ -27,16 +28,20 @@ import {
 import { getChainNameFromCCIPSelector } from '../ccip/utils.js';
 import { HyperlaneContracts } from '../contracts/types.js';
 import { ProxyFactoryFactories } from '../deploy/contracts.js';
+import { ChainTechnicalStack } from '../metadata/chainMetadataTypes.js';
 import { MultiProvider } from '../providers/MultiProvider.js';
 import { ChainName } from '../types.js';
+import { normalizeConfig } from '../utils/ism.js';
 
 import {
   DomainRoutingIsmConfig,
+  InterchainAccountRouterIsm,
   IsmConfig,
   IsmType,
   ModuleType,
   RoutingIsmConfig,
   RoutingIsmDelta,
+  STATIC_ISM_TYPES,
   ismTypeToModuleType,
 } from './types.js';
 
@@ -126,9 +131,8 @@ export async function moduleCanCertainlyVerify(
           provider,
         );
 
-        const [, threshold] = await multisigModule.validatorsAndThreshold(
-          message,
-        );
+        const [, threshold] =
+          await multisigModule.validatorsAndThreshold(message);
         return threshold > 0;
       } else if (moduleType === ModuleType.ROUTING) {
         const routingIsm = IRoutingIsm__factory.connect(destModule, provider);
@@ -234,6 +238,24 @@ export async function moduleMatchesConfig(
   if (actualType !== ismTypeToModuleType(config.type)) return false;
   let matches = true;
   switch (config.type) {
+    case IsmType.STORAGE_MERKLE_ROOT_MULTISIG:
+    case IsmType.STORAGE_MESSAGE_ID_MULTISIG: {
+      // A storage multisig ism matches if validators and threshold match the config
+      const storageMerkleRootMultisigIsm =
+        AbstractStorageMultisigIsm__factory.connect(moduleAddress, provider);
+      const [validators, threshold] =
+        await storageMerkleRootMultisigIsm.validatorsAndThreshold(
+          ethers.constants.AddressZero,
+        );
+      matches = deepEquals(
+        normalizeConfig({ validators, threshold }),
+        normalizeConfig({
+          validators: config.validators,
+          threshold: config.threshold,
+        }),
+      );
+      break;
+    }
     case IsmType.MERKLE_ROOT_MULTISIG: {
       // A MerkleRootMultisigIsm matches if validators and threshold match the config
       const expectedAddress =
@@ -339,9 +361,8 @@ export async function moduleMatchesConfig(
         moduleAddress,
         provider,
       );
-      const [subModules, threshold] = await aggregationIsm.modulesAndThreshold(
-        '0x',
-      );
+      const [subModules, threshold] =
+        await aggregationIsm.modulesAndThreshold('0x');
       matches &&= threshold === config.threshold;
       matches &&= subModules.length === config.modules.length;
 
@@ -455,31 +476,30 @@ export async function routingModuleDelta(
   contracts: HyperlaneContracts<ProxyFactoryFactories>,
   mailbox?: Address,
 ): Promise<RoutingIsmDelta> {
-  // The ICA_ROUTING and AMOUNT_ROUTING ISMs are immutable routing ISMs.
   if (
-    config.type === IsmType.ICA_ROUTING ||
-    config.type === IsmType.AMOUNT_ROUTING
+    config.type === IsmType.FALLBACK_ROUTING ||
+    config.type === IsmType.ROUTING
   ) {
-    return {
-      domainsToEnroll: [],
-      domainsToUnenroll: [],
-    };
+    return domainRoutingModuleDelta(
+      destination,
+      moduleAddress,
+      config,
+      multiProvider,
+      contracts,
+      mailbox,
+    );
   }
 
-  return domainRoutingModuleDelta(
-    destination,
-    moduleAddress,
-    config,
-    multiProvider,
-    contracts,
-    mailbox,
-  );
+  return {
+    domainsToEnroll: [],
+    domainsToUnenroll: [],
+  };
 }
 
 async function domainRoutingModuleDelta(
   destination: ChainName,
   moduleAddress: Address,
-  config: DomainRoutingIsmConfig,
+  config: DomainRoutingIsmConfig | InterchainAccountRouterIsm,
   multiProvider: MultiProvider,
   contracts: HyperlaneContracts<ProxyFactoryFactories>,
   mailbox?: Address,
@@ -507,8 +527,13 @@ async function domainRoutingModuleDelta(
     if (mailbox && !eqAddress(mailboxAddress, mailbox)) delta.mailbox = mailbox;
   }
 
+  const ismByDomainName =
+    config.type === IsmType.INTERCHAIN_ACCOUNT_ROUTING
+      ? config.isms
+      : config.domains;
+
   // config.domains is already filtered to only include domains in the multiprovider
-  const safeConfigDomains = objMap(config.domains, (chainName) =>
+  const safeConfigDomains = objMap(ismByDomainName, (chainName) =>
     multiProvider.getDomainId(chainName),
   );
 
@@ -517,7 +542,7 @@ async function domainRoutingModuleDelta(
     (domain) => !Object.values(safeConfigDomains).includes(domain),
   );
   // check for inclusion of domains in the config
-  for (const [origin, subConfig] of Object.entries(config.domains)) {
+  for (const [origin, subConfig] of Object.entries(ismByDomainName)) {
     const originDomain = safeConfigDomains[origin];
     if (!deployedDomains.includes(originDomain)) {
       delta.domainsToEnroll.push(originDomain);
@@ -556,6 +581,8 @@ export function collectValidators(
 
   let validators: string[] = [];
   if (
+    config.type === IsmType.STORAGE_MERKLE_ROOT_MULTISIG ||
+    config.type === IsmType.STORAGE_MESSAGE_ID_MULTISIG ||
     config.type === IsmType.MERKLE_ROOT_MULTISIG ||
     config.type === IsmType.MESSAGE_ID_MULTISIG
   ) {
@@ -585,4 +612,45 @@ export function collectValidators(
   }
 
   return new Set(validators);
+}
+
+/**
+ * Checks if the given ISM type requires static deployment
+ *
+ * @param {IsmType} ismType - The type of Interchain Security Module (ISM)
+ * @returns {boolean} True if the ISM type requires static deployment, false otherwise
+ */
+export function isStaticIsm(ismType: IsmType): boolean {
+  return STATIC_ISM_TYPES.includes(ismType);
+}
+
+/**
+ * Determines if static ISM deployment is supported on a given chain's technical stack
+ * @dev Currently, only ZkSync does not support static deployments
+ * @param chainTechnicalStack - The technical stack of the target chain
+ * @returns boolean - true if static deployment is supported, false for ZkSync
+ */
+export function isStaticDeploymentSupported(
+  chainTechnicalStack: ChainTechnicalStack | undefined,
+): boolean {
+  return chainTechnicalStack !== ChainTechnicalStack.ZkSync;
+}
+
+/**
+ * Checks if the given ISM type is compatible with the chain's technical stack.
+ *
+ * @param {IsmType} params.ismType - The type of Interchain Security Module (ISM)
+ * @param {ChainTechnicalStack | undefined} params.chainTechnicalStack - The technical stack of the chain
+ * @returns {boolean} True if the ISM type is compatible with the chain, false otherwise
+ */
+export function isIsmCompatible({
+  chainTechnicalStack,
+  ismType,
+}: {
+  chainTechnicalStack: ChainTechnicalStack | undefined;
+  ismType: IsmType;
+}): boolean {
+  // Skip compatibility check for non-static ISMs as they're always supported
+  if (!isStaticIsm(ismType)) return true;
+  return isStaticDeploymentSupported(chainTechnicalStack);
 }

@@ -69,14 +69,29 @@ export async function checkMessageStatus({
     log(
       `Checking status of message ${message.id} on ${message.parsed.destinationChain}`,
     );
-    const delivered = await core.isDelivered(message);
-    if (delivered) {
-      const processedReceipt = await core.getProcessedReceipt(message);
-      const url = context.multiProvider.getExplorerTxUrl(
-        message.parsed.destination,
-        { hash: processedReceipt.transactionHash },
+    let delivered;
+    try {
+      delivered = await core.isDelivered(message);
+    } catch (error) {
+      logRed(
+        `Failed to check if message ${message.id} was delivered: ${error}`,
       );
-      logGreen(`Message ${message.id} was delivered in ${url}`);
+      undelivered.push(message);
+      continue;
+    }
+    if (delivered) {
+      try {
+        const processedReceipt = await core.getProcessedReceipt(message);
+        const hash = processedReceipt.transactionHash;
+        const url = context.multiProvider.tryGetExplorerTxUrl(
+          message.parsed.destination,
+          { hash },
+        );
+        logGreen(`Message ${message.id} was delivered in ${url || hash}`);
+      } catch (error) {
+        logRed(`Failed to fetch processed receipt: ${error}`);
+        logGreen(`Message ${message.id} was delivered`);
+      }
     } else {
       logBlue(`Message ${message.id} was not yet delivered`);
       undelivered.push(message);

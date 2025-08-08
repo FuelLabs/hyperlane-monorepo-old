@@ -1,4 +1,5 @@
 import { ethers } from 'ethers';
+import fs from 'fs';
 import path from 'path';
 import prompts from 'prompts';
 
@@ -19,10 +20,9 @@ import {
   InterchainAccount,
   InterchainAccountDeployer,
   InterchainQueryDeployer,
-  LiquidityLayerDeployer,
   TestRecipientDeployer,
 } from '@hyperlane-xyz/sdk';
-import { objFilter, objMap } from '@hyperlane-xyz/utils';
+import { inCIMode, objFilter, objMap } from '@hyperlane-xyz/utils';
 
 import { Contexts } from '../config/contexts.js';
 import { core as coreConfig } from '../config/environments/mainnet3/core.js';
@@ -35,9 +35,10 @@ import {
   extractBuildArtifact,
   fetchExplorerApiKeys,
 } from '../src/deployment/verify.js';
+import { DEPLOYERS } from '../src/governance.js';
 import { Role } from '../src/roles.js';
 import { impersonateAccount, useLocalProvider } from '../src/utils/fork.js';
-import { inCIMode, writeYamlAtPath } from '../src/utils/utils.js';
+import { writeYamlAtPath } from '../src/utils/utils.js';
 
 import {
   Modules,
@@ -95,12 +96,7 @@ async function main() {
     });
     await useLocalProvider(multiProvider, fork);
 
-    // const deployers = await envConfig.getKeys(
-    //   Contexts.Hyperlane,
-    //   Role.Deployer,
-    // );
-    // const deployer = deployers[fork].address;
-    const deployer = '0xa7ECcdb9Be08178f896c26b7BbD8C3D4E844d9Ba';
+    const deployer = DEPLOYERS[environment];
     const signer = await impersonateAccount(deployer);
 
     multiProvider.setSharedSigner(signer);
@@ -175,24 +171,6 @@ async function main() {
     const { core } = await getHyperlaneCore(environment, multiProvider);
     config = core.getRouterConfig(envConfig.owners);
     deployer = new InterchainQueryDeployer(
-      multiProvider,
-      contractVerifier,
-      concurrentDeploy,
-    );
-  } else if (module === Modules.LIQUIDITY_LAYER) {
-    const { core } = await getHyperlaneCore(environment, multiProvider);
-    const routerConfig = core.getRouterConfig(envConfig.owners);
-    if (!envConfig.liquidityLayerConfig) {
-      throw new Error(`No liquidity layer config for ${environment}`);
-    }
-    config = objMap(
-      envConfig.liquidityLayerConfig.bridgeAdapters,
-      (chain, conf) => ({
-        ...conf,
-        ...routerConfig[chain],
-      }),
-    );
-    deployer = new LiquidityLayerDeployer(
       multiProvider,
       contractVerifier,
       concurrentDeploy,
@@ -294,9 +272,22 @@ async function main() {
           )
         : config;
 
-    const deployPlanPath = path.join(modulePath, 'deployment-plan.yaml');
-    writeYamlAtPath(deployPlanPath, confirmConfig);
-    console.log(`Deployment Plan written to ${deployPlanPath}`);
+    // Have to print plan per chain because full plan is too big
+    const deploymentPlansDir = path.join(modulePath, 'deployment-plans');
+    if (!fs.existsSync(deploymentPlansDir)) {
+      fs.mkdirSync(deploymentPlansDir, { recursive: true });
+    }
+
+    Object.entries(confirmConfig).forEach(([chain, config]) => {
+      const chainDeployPlanPath = path.join(
+        deploymentPlansDir,
+        `${chain}.yaml`,
+      );
+      writeYamlAtPath(chainDeployPlanPath, config);
+      console.log(
+        `Deployment Plan for ${chain} written to ${chainDeployPlanPath}`,
+      );
+    });
 
     const { value: confirmed } = await prompts({
       type: 'confirm',
