@@ -43,7 +43,6 @@ spec:
       terminationGracePeriodSeconds: 10
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      initContainers:
       {{- if .Values.hyperlane.relayer.dbBootstrap.enabled }}
       initContainers:
       - name: db-bootstrap
